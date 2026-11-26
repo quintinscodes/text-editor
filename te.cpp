@@ -6,10 +6,14 @@
 #include <format>
 #include <stdlib.h>
 #include <sys/ioctl.h>
+#include <string.h>
+
+#define TE_VERSION "v0.0.1"
 
 #define CTRL_KEY(k) ((k) & 0x1f)
 
 struct editorConfig {
+	int cx, cy;
 	struct termios orig_termios;
 	int screencols;
 	int screenrows;
@@ -17,6 +21,26 @@ struct editorConfig {
 
 struct editorConfig E;
 
+struct abuf {
+	char *b;
+	int len;
+
+};
+
+#define ABUF_INIT {NULL, 0}
+
+void abAppend(struct abuf *ab, const char *s, int len) {
+	char *new_buf = static_cast<char*>(std::realloc(ab->b, ab->len + len));
+
+	if (new_buf == NULL) return;
+	memcpy(&new_buf[ab->len], s, len);
+	ab->b = new_buf;
+	ab->len += len;
+}
+
+void abFree(struct abuf *ab) {
+	free(ab->b);
+}
 
 void die(const char *s) {
 	write(STDOUT_FILENO, "\x1b[2J", 4);
@@ -45,15 +69,30 @@ void enableRawMode() {
 	if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == -1) die("tcsetattr");
 }
 
-
+void editorMoveCursor(char key) {
+	switch(key) {
+		case 'a':
+			E.cx--;
+			break;
+		case 'd':
+			E.cx++;
+			break;
+		case 'w':
+			E.cy--;
+			break;
+		case 's':
+			E.cy++;
+			break;
+	} 
+}
 
 char editorReadKey() {
 	int nread;
 	char c;
 	while((nread = read(STDIN_FILENO, &c, 1)) =! -1) {
 		if (nread == -1 && errno != EAGAIN) die("read");
-
 	}
+	
 	return c;
 }
 
@@ -65,25 +104,53 @@ void editorProcessKeypress() {
 			exit(0);
 			write(STDOUT_FILENO, "\x1b[2J", 4);
 			break;
+
+		case 'w':
+		case 's':
+		case 'a':
+		case 'd':
+			editorMoveCursor(c);
+			break;
 		}
 		
 	}
 	
-void editorDrawRows() {
+void editorDrawRows(struct abuf *ab) {
   int y;
   for (y = 0; y < E.screenrows; y++) {
-    write(STDOUT_FILENO, "-", 1);
-    if (y < E.screenrows - 1) {
-      write(STDOUT_FILENO, "\r\n", 2);
+	if (y == E.screenrows / 3) {
+		char welcome[30];
+		int welcomelen = std::snprintf(welcome, sizeof(welcome),
+		"TE Editor -- version %s", TE_VERSION);
+		if (welcomelen > E.screencols) welcomelen = E.screencols;
+		abAppend(ab, welcome, welcomelen);
+	} else {
+		abAppend(ab, "-", 1);
+
+	}
+
+	abAppend(ab, "\x1b[K", 3);
+	if (y < E.screenrows - 1) {
+      abAppend(ab, "\r\n", 2);
     }
   }
 }
 
 
 void editorRefreshScreen() {
-	write(STDOUT_FILENO, "\x1b[2J", 4);
-	write(STDOUT_FILENO, "\x1b[H", 3);
-	editorDrawRows();
+	struct abuf ab = ABUF_INIT;
+
+	abAppend(&ab, "\x1b[?25l", 6);
+	abAppend(&ab, "\x1b[H", 3);
+	editorDrawRows(&ab);
+
+	char buf[32];
+  	snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cy + 1, E.cx + 1);
+  	abAppend(&ab, buf, strlen(buf));
+
+	abAppend(&ab, "\x1b[?25h", 6);
+	write(STDOUT_FILENO, ab.b, ab.len);
+	abFree(&ab);
 
 }
 
@@ -123,6 +190,9 @@ int getWindowSize(int *rows, int *cols) {
 }
 
 void initEditor() {
+	E.cx = 0;
+	E.cy = 0;	
+
 	if (getWindowSize(&E.screenrows, &E.screencols) == -1) die("getWindowSize");
 }
 
